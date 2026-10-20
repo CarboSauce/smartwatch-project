@@ -1,18 +1,29 @@
 [package]
 name = "wesu1"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 
 [dependencies]
-cortex-m = "0.7"
+# Pick the latest versions: `cargo add embassy-stm32 embassy-executor embassy-time`
+# then add the features below. Feature names vary slightly between releases.
+embassy-stm32 = { version = "*", features = [
+    "stm32l151ve",   # e.g. stm32l151xx variant printed on your MCU
+    "time-driver-any",              # older releases: "time-driver-tim2" etc.
+    "unstable-pac",
+    "exti",
+    "memory-x"
+] }
+embassy-executor = { version = "*", features = ["arch-cortex-m", "executor-thread"] }
+embassy-time = { version = "*", features = ["tick-hz-32_768"] }
+cortex-m = { version = "0.7", features = ["critical-section-single-core"] }
 cortex-m-rt = "0.7"
-panic-halt = "0.2"
-nb = "1"
-stm32l1xx-hal = { version = "*", features = ["stm32l151", "rt"] }
-bluenrg = "*"
-bluetooth-hci = "*"
+panic-halt = "1"
 
 [profile.dev]
 debug = true
+opt-level = "s"
+
 [profile.release]
+debug = true
 lto = true
+opt-level = "s"
