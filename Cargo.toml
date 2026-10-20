@@ -4,12 +4,13 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-bluenrg = "0.1.0"
-cortex-m = "0.5.8"
-cortex-m-rt = "0.6.7"
-panic-halt = "1.0"
-stm32l1xx-hal = "0.1"
-
+cortex-m = "0.7"
+cortex-m-rt = "0.7"
+panic-halt = "0.2"
+nb = "1"
+stm32l1xx-hal = { version = "*", features = ["stm32l151", "rt"] }
+bluenrg = "*"
+bluetooth-hci = "*"
 
 [profile.dev]
 debug = true
