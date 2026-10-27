@@ -64,17 +64,24 @@ impl<'d> Lsm6ds3<'d> {
         self.cs.set_high();
     }
 
-    fn read_accel(&mut self) -> (i16, i16, i16) {
-        let mut buf = [0u8; 7];
-        buf[0] = 0x28 | 0x80;
+    // Burst read both Gyroscope (0x22-0x27) and Accelerometer (0x28-0x2D)
+    fn read_motion(&mut self) -> (i16, i16, i16, i16, i16, i16) {
+        // 1 byte register addr + 12 bytes of payload = 13 bytes
+        let mut buf = [0u8; 13];
+        buf[0] = 0x22 | 0x80; // Start at OUTX_L_G
+
         self.cs.set_low();
         self.spi.blocking_transfer_in_place(&mut buf).ok();
         self.cs.set_high();
 
-        let x = i16::from_le_bytes([buf[1], buf[2]]);
-        let y = i16::from_le_bytes([buf[3], buf[4]]);
-        let z = i16::from_le_bytes([buf[5], buf[6]]);
-        (x, y, z)
+        let gx = i16::from_le_bytes([buf[1], buf[2]]);
+        let gy = i16::from_le_bytes([buf[3], buf[4]]);
+        let gz = i16::from_le_bytes([buf[5], buf[6]]);
+        let ax = i16::from_le_bytes([buf[7], buf[8]]);
+        let ay = i16::from_le_bytes([buf[9], buf[10]]);
+        let az = i16::from_le_bytes([buf[11], buf[12]]);
+
+        (ax, ay, az, gx, gy, gz)
     }
 }
 
@@ -252,7 +259,7 @@ async fn main(spawner: Spawner) {
     spawner.spawn(blink(led)).unwrap();
 
     // ==========================================
-    // 1. BlueNRG SPI Setup (Restored to PA Pins on SPI1)
+    // 1. BlueNRG SPI Setup (Dedicated to SPI1)
     // ==========================================
     let mut spi1_cfg = spi::Config::default();
     spi1_cfg.frequency = Hertz(1_000_000);
@@ -260,7 +267,7 @@ async fn main(spawner: Spawner) {
     let spi1 = Spi::new_blocking(p.SPI1, p.PA5, p.PA7, p.PA6, spi1_cfg);
 
     let mut cs_bnrg = Output::new(p.PC3, Level::High, Speed::VeryHigh);
-    cs_bnrg.set_high();
+    cs_bnrg.set_high(); // Deselect immediately
 
     let mut rst = Output::new(p.PA9, Level::High, Speed::Low);
     let irq_bnrg = ExtiInput::new(p.PC13, p.EXTI13, Pull::Down, Irqs);
@@ -273,7 +280,7 @@ async fn main(spawner: Spawner) {
     };
 
     // ==========================================
-    // 2. LSM6DS3 Accelerometer Setup (Dedicated to SPI3)
+    // 2. LSM6DS3 Accelerometer/Gyro (Dedicated to SPI3)
     // ==========================================
     let mut spi3_cfg = spi::Config::default();
     spi3_cfg.frequency = Hertz(1_000_000);
@@ -281,7 +288,7 @@ async fn main(spawner: Spawner) {
     let spi3 = Spi::new_blocking(p.SPI3, p.PB3, p.PB5, p.PB4, spi3_cfg);
 
     let mut cs_accel = Output::new(p.PB6, Level::High, Speed::VeryHigh);
-    cs_accel.set_high();
+    cs_accel.set_high(); // Deselect immediately
 
     let mut accel = Lsm6ds3 {
         spi: spi3,
@@ -300,8 +307,10 @@ async fn main(spawner: Spawner) {
         rprintln!("WARNING: Unexpected WHO_AM_I.");
     }
 
-    // CTRL1_XL (0x10) = 0x40 (104 Hz ODR, +/-2g range)
+    // CTRL1_XL (0x10) = 0x40 (Accel: 104 Hz ODR, +/-2g range)
     accel.write_reg(0x10, 0x40);
+    // CTRL2_G (0x11) = 0x40 (Gyro: 104 Hz ODR, 250 dps)
+    accel.write_reg(0x11, 0x40);
 
     // Hardware Reset BlueNRG
     rst.set_low();
@@ -315,9 +324,12 @@ async fn main(spawner: Spawner) {
         halt().await;
     }
     bnrg.read(&mut buf);
+
+    // Give BlueNRG firmware time to settle post-reset
+    Timer::after_millis(50).await;
     STAGE.store(2, Ordering::Relaxed);
 
-    // Set custom MAC address
+    // Set custom MAC address (Non-fatal if rejected by stack)
     let addr = [0x12u8, 0x34, 0x00, 0xE1, 0x80, 0x05];
     let mut cfg_data = [0u8; 8];
     cfg_data[0] = 0x00;
@@ -325,9 +337,9 @@ async fn main(spawner: Spawner) {
     cfg_data[2..8].copy_from_slice(&addr);
 
     if !bnrg.command(OP_WRITE_CONFIG_DATA, &cfg_data).await {
-        rprintln!("ERROR: Failed setting MAC");
-        STAGE.store(0xE2, Ordering::Relaxed);
-        halt().await;
+        rprintln!("WARNING: Failed setting custom MAC, using default.");
+    } else {
+        rprintln!("Custom MAC set successfully.");
     }
     STAGE.store(3, Ordering::Relaxed);
 
@@ -354,7 +366,7 @@ async fn main(spawner: Spawner) {
     }
     STAGE.store(5, Ordering::Relaxed);
 
-    // Add Custom Accelerometer Service
+    // --- Add Custom IMU Service ---
     let accel_service_uuid = [
         0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF,
         0x00,
@@ -371,7 +383,7 @@ async fn main(spawner: Spawner) {
     }
     let srv_handle = [bnrg.resp[0], bnrg.resp[1]];
 
-    // Add Custom Accelerometer Characteristic
+    // --- Add Custom IMU Characteristic (12 bytes) ---
     let accel_char_uuid = [
         0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF,
         0x01,
@@ -381,7 +393,7 @@ async fn main(spawner: Spawner) {
     char_req[1] = srv_handle[1];
     char_req[2] = 0x02; // 128-bit UUID
     char_req[3..19].copy_from_slice(&accel_char_uuid);
-    char_req[19] = 0x06; // Value length: 6 bytes for X,Y,Z
+    char_req[19] = 0x0C; // Value length: 12 bytes (Accel X,Y,Z + Gyro X,Y,Z)
     char_req[20] = 0x12; // Properties: Read | Notify
     char_req[21] = 0x00; // Security permissions: none
     char_req[22] = 0x00; // GATT event mask: none
@@ -415,7 +427,7 @@ async fn main(spawner: Spawner) {
 
     // --- Main Event Loop ---
     loop {
-        match with_timeout(Duration::from_millis(1000), bnrg.irq.wait_for_high()).await {
+        match with_timeout(Duration::from_millis(100), bnrg.irq.wait_for_high()).await {
             Ok(_) => {
                 let n = bnrg.read(&mut buf);
 
@@ -458,24 +470,33 @@ async fn main(spawner: Spawner) {
                 }
             }
             Err(_) => {
-                // Timeout fired (1 second passed). Read live accelerometer values.
-                let (x, y, z) = accel.read_accel();
-                rprintln!("Accel Raw Data -> X: {}, Y: {}, Z: {}", x, y, z);
+                // Timeout fired (1 second passed). Read live IMU values.
+                let (ax, ay, az, gx, gy, gz) = accel.read_motion();
+
+                // Static print string bypassing the integer formatting bug on M3 architectures
+                rprintln!("xyz: {} {} {} ; gxgygz: {} {} {}", ax, ay, az, gx, gy, gz);
 
                 // Only send data if a phone is connected (7) or bonded (9)
                 let state = STAGE.load(Ordering::Relaxed);
                 if state == 7 || state == 9 {
-                    let mut val_req = [0u8; 12];
+                    // Packet structure: 6 byte header + 12 byte payload = 18 bytes
+                    let mut val_req = [0u8; 18];
                     val_req[0] = srv_handle[0];
                     val_req[1] = srv_handle[1];
                     val_req[2] = char_handle[0];
                     val_req[3] = char_handle[1];
                     val_req[4] = 0x00; // offset
-                    val_req[5] = 0x06; // length (6 bytes)
+                    val_req[5] = 0x0C; // length (12 bytes)
 
-                    val_req[6..8].copy_from_slice(&x.to_le_bytes());
-                    val_req[8..10].copy_from_slice(&y.to_le_bytes());
-                    val_req[10..12].copy_from_slice(&z.to_le_bytes());
+                    // Pack Accelerometer Data
+                    val_req[6..8].copy_from_slice(&ax.to_le_bytes());
+                    val_req[8..10].copy_from_slice(&ay.to_le_bytes());
+                    val_req[10..12].copy_from_slice(&az.to_le_bytes());
+
+                    // Pack Gyroscope Data
+                    val_req[12..14].copy_from_slice(&gx.to_le_bytes());
+                    val_req[14..16].copy_from_slice(&gy.to_le_bytes());
+                    val_req[16..18].copy_from_slice(&gz.to_le_bytes());
 
                     bnrg.send_cmd(OP_GATT_UPDATE_CHAR_VALUE, &val_req).await;
                 }
