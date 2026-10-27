@@ -11,6 +11,7 @@ MEMORY
 }
 
 _stack_start = ORIGIN(RAM) + LENGTH(RAM);
+_stack_size = 4K; /* Increase from default 2K */
 
 ENTRY(Reset);
 EXTERN(__RESET_VECTOR);
