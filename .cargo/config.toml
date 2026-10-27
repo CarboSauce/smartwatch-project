@@ -1,8 +1,8 @@
 [build]
  target = "thumbv7m-none-eabi"
  
-[target.thumbv7em-none-eabihf]
-runner = "probe-rs run --chip STM32L151VE D:/Gloxinia/.cache/cargo/thumbv7em-none-eabihf/release/wesu1 --connect-under-reset"
+[target.thumbv7m-none-eabi]
+runner = "probe-rs run --chip STM32L151VE --connect-under-reset"
 # rustflags = [
 #     "-C", "link-arg=-Tscript.ld"
 # ]
