@@ -490,8 +490,10 @@ async fn main(spawner: Spawner) {
     rprintln!("LSM6DS3 WHO_AM_I: 0x{:02X}", whoami);
 
     // ODR = 104 Hz (0x40) on Accel & Gyro so 50 Hz sampling always reads fresh data
-    accel.write_reg(0x10, 0x40);
-    accel.write_reg(0x11, 0x40);
+    // CTRL1_XL = 0x4C: 104 Hz, +/-8 g.  CTRL2_G = 0x4C: 104 Hz, +/-2000 dps.
+    // (the fall models were trained on impacts up to ~6.5 g and >1000 dps)
+    accel.write_reg(0x10, 0x4C);
+    accel.write_reg(0x11, 0x4C);
 
     rst.set_low();
     Timer::after_millis(10).await;
@@ -712,13 +714,14 @@ async fn main(spawner: Spawner) {
             let (ax, ay, az, gx, gy, gz) = accel.read_motion();
 
             // Convert to physical units (g and dps)
-            let ax_g = (ax as f32) * 0.000061;
-            let ay_g = (ay as f32) * 0.000061;
-            let az_g = (az as f32) * 0.000061;
+            // +/-8 g -> 0.244 mg/LSB, +/-2000 dps -> 70 mdps/LSB
+            let ax_g = (ax as f32) * 0.000244;
+            let ay_g = (ay as f32) * 0.000244;
+            let az_g = (az as f32) * 0.000244;
 
-            let gx_dps = (gx as f32) * 0.00875;
-            let gy_dps = (gy as f32) * 0.00875;
-            let gz_dps = (gz as f32) * 0.00875;
+            let gx_dps = (gx as f32) * 0.07;
+            let gy_dps = (gy as f32) * 0.07;
+            let gz_dps = (gz as f32) * 0.07;
 
             // Feed samples to on-device ML pipeline
             if fall_detector.process_sample(ax_g, ay_g, az_g, gx_dps, gy_dps, gz_dps) {
